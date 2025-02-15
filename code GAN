@@ -1,0 +1,369 @@
+from google.colab import drive
+drive.mount('/content/drive')
+
+import torch
+print(torch.cuda.is_available())
+
+import kagglehub
+
+path = kagglehub.dataset_download("soumikrakshit/anime-faces")
+
+
+print("Đường dẫn tới tệp dữ liệu:", path)
+
+import os
+# In ra danh sách các tệp trong thư mục
+print(os.listdir(path))
+
+import numpy as np
+import pandas as pd
+import os
+from PIL import Image
+from matplotlib import pyplot as plt
+
+import torch
+import torchvision.transforms as T
+from torch.utils.data import Dataset, DataLoader
+from torchvision import datasets as torch_dataset
+from torchvision.utils import make_grid
+from torch import nn
+from torch.nn import functional as F
+from sklearn.model_selection import train_test_split
+
+import kagglehub
+
+path = kagglehub.dataset_download("soumikrakshit/anime-faces")
+
+
+print("Đường dẫn tới tệp dữ liệu:", path)
+img_size = 64
+data_dir = path
+data_transforms = T.Compose([
+    T.Resize(img_size),
+    T.CenterCrop(img_size),
+    T.ToTensor(),
+    T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+])
+
+anime_dataset = torch_dataset.ImageFolder(root=data_dir, transform=data_transforms)
+dataloader = DataLoader(dataset=anime_dataset, batch_size=128, shuffle=True, num_workers=4)
+
+img_batch = next(iter(dataloader))[0]
+combine_img = make_grid(img_batch[:32], normalize=True, padding=2).permute(1,2,0)
+plt.figure(figsize=(15,15))
+plt.imshow(combine_img)
+plt.show()
+
+
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
+
+def Conv(n_input, n_output, k_size=4, stride=2, padding=0, bn=False):
+    return nn.Sequential(
+        nn.Conv2d(
+            n_input, n_output,
+            kernel_size=k_size,
+            stride=stride,
+            padding=padding, bias=False),
+        nn.BatchNorm2d(n_output),
+        nn.LeakyReLU(0.2, inplace=True),
+        nn.Dropout(p=0.2, inplace=False))
+
+def Deconv(n_input, n_output, k_size=4, stride=2, padding=1):
+    return nn.Sequential(
+        nn.ConvTranspose2d(
+            n_input, n_output,
+            kernel_size=k_size,
+            stride=stride, padding=padding,
+            bias=False),
+        nn.BatchNorm2d(n_output),
+        nn.ReLU(inplace=True))
+
+class Generator(nn.Module):
+    def __init__(self, z=100, nc=64):
+        super(Generator, self).__init__()
+        self.net = nn.Sequential(
+            Deconv(z, nc*8, 4,1,0),
+            Deconv(nc*8, nc*4, 4,2,1),
+            Deconv(nc*4, nc*2, 4,2,1),
+            Deconv(nc*2, nc, 4,2,1),
+            nn.ConvTranspose2d(nc,3, 4,2,1,bias=False),
+            nn.Tanh()
+        )
+
+    def forward(self, input):
+        return self.net(input)
+
+class Discriminator(nn.Module):
+    def __init__(self, nc=64):
+        super(Discriminator, self).__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(
+                3, nc,
+                kernel_size=4,
+                stride=2,
+                padding=1, bias=False),
+            nn.LeakyReLU(0.2, inplace=True),
+            Conv(nc, nc*2, 4,2,1),
+            Conv(nc*2, nc*4, 4,2,1),
+            Conv(nc*4, nc*8, 4,2,1),
+            nn.Conv2d(nc*8, 1,4,1,0, bias=False),
+            nn.Sigmoid())
+
+    def forward(self, input):
+        return self.net(input)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Đang sử dụng thiết bị: {device}")
+
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+dis_model = Discriminator()
+gen_model = Generator()
+
+# Tải trọng số vào mô hình
+
+import os
+
+# Đường dẫn đến tệp cần kiểm tra
+file_path = "/content/gen_model.pth"
+file_path2 = "/content/dis_model.pth"
+
+
+# Kiểm tra tệp có tồn tại không
+if os.path.exists(file_path):
+    print(f"Tệp '{file_path}' tồn tại.")
+    gen_model.load_state_dict(torch.load('gen_model.pth'))
+else:
+    print(f"Tệp '{file_path}' không tồn tại.")
+
+
+if os.path.exists(file_path2):
+    print(f"Tệp '{file_path2}' tồn tại.")
+    dis_model.load_state_dict(torch.load('dis_model.pth'))
+else:
+    print(f"Tệp '{file_path2}' không tồn tại.")
+
+
+
+gen_model.load_state_dict(torch.load('gen_model.pth'))
+dis_model.load_state_dict(torch.load('dis_model.pth'))
+
+gen_model.apply(weights_init)
+dis_model.apply(weights_init)
+
+dis_model.to(device)
+gen_model.to(device)
+
+
+print('init model')
+#print(gen_model)
+#print(dis_model)
+
+from torch import optim
+
+real_label = 1.
+fake_label = 0.
+lr = 0.0002
+beta1 = 0.5
+
+criterion = nn.BCELoss()
+optim_D = optim.Adam(dis_model.parameters(), lr=lr, betas=(beta1, 0.999))
+optim_G = optim.Adam(gen_model.parameters(), lr=lr, betas=(beta1, 0.999))
+
+
+#print(optim_D)
+#print(optim_G)
+
+import csv
+import matplotlib.pyplot as plt
+import torch
+from torch.distributions.uniform import Uniform
+from torchvision.utils import make_grid
+
+# Tạo tệp CSV để lưu các thông số
+csv_filename = 'training_logs.csv'
+with open(csv_filename, mode='w', newline='') as file:
+    writer = csv.writer(file)
+    writer.writerow(['Epoch', 'Iteration', 'Loss_D', 'Loss_G', 'D(x)', 'D(G(z))_fake', 'D(G(z))_real'])
+
+img_list = []
+real_img_list = []
+iters = 1
+epoch_nb = 200  # Tăng số lượng epoch
+fixed_noise = torch.randn(32, 100, 1, 1, device=device)
+
+for epoch in range(epoch_nb):
+    for i, data in enumerate(dataloader):
+        # Train Discriminator
+        dis_model.zero_grad()
+        real_img = data[0].to(device)
+        bz = real_img.size(0)
+
+        # Label smoothing
+        label_real = Uniform(0.9, 1.0).sample((bz,)).to(device)
+        output_real = dis_model(real_img).view(-1)
+        error_real = criterion(output_real, label_real)
+        error_real.backward()
+        D_x = output_real.mean().item()
+
+        # Train with fake image
+        noise = torch.randn(bz, 100, 1, 1, device=device)
+        fake_img = gen_model(noise)
+        label_fake = Uniform(0.0, 0.1).sample((bz,)).to(device)  # Tăng khoảng cho fake
+        output_fake = dis_model(fake_img.detach()).view(-1)
+        error_fake = criterion(output_fake, label_fake)
+        error_fake.backward()
+        D_G_z1 = output_fake.mean().item()
+        error_D = error_real + error_fake
+        optim_D.step()
+
+        # Train Generator
+        gen_model.zero_grad()
+        label_gen = Uniform(0.95, 1.0).sample((bz,)).to(device)
+        output_gen = dis_model(fake_img).view(-1)
+        error_G = criterion(output_gen, label_gen)
+        error_G.backward()
+        optim_G.step()
+        D_G_z2 = output_gen.mean().item()
+
+        # Lưu thông số vào CSV
+        with open(csv_filename, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([epoch, iters, error_D.item(), error_G.item(), D_x, D_G_z1, D_G_z2])
+
+        if i % 300 == 0:
+            print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(x): %.4f\tD(G(z)): %.4f / %.4f'
+                  % (epoch, epoch_nb, i, len(dataloader),
+                     error_D.item(), error_G.item(), D_x, D_G_z1, D_G_z2))
+
+        if epoch > 1:
+            if (iters % 1000 == 0) or ((epoch == epoch_nb-1) and (i == len(dataloader)-1)):
+                with torch.no_grad():
+                    fake_img = gen_model(fixed_noise).detach().cpu()
+                fake_img_grid = make_grid(fake_img, padding=2, normalize=True)
+
+                # Lấy ảnh thật tương ứng với batch đầu tiên
+                real_img_grid = make_grid(real_img[:32].detach().cpu(), padding=2, normalize=True)
+
+                img_list.append(fake_img_grid)
+                real_img_list.append(real_img_grid)
+
+                plt.figure(figsize=(15, 15))
+
+                # Hiển thị ảnh thật
+                plt.subplot(1, 2, 1)
+                plt.title("Real Images")
+                plt.imshow(real_img_grid.permute(1, 2, 0))
+
+                # Hiển thị ảnh giả
+                plt.subplot(1, 2, 2)
+                plt.title("Fake Images")
+                plt.imshow(fake_img_grid.permute(1, 2, 0))
+
+                plt.show()
+
+        iters += 1
+
+# Vẽ biểu đồ từ CSV
+import pandas as pd
+
+logs = pd.read_csv(csv_filename)
+plt.figure(figsize=(10, 5))
+plt.plot(logs['Iteration'], logs['Loss_D'], label='Loss_D')
+plt.plot(logs['Iteration'], logs['Loss_G'], label='Loss_G')
+plt.xlabel('Iteration')
+plt.ylabel('Loss')
+plt.legend()
+plt.title('Discriminator and Generator Loss')
+plt.show()
+
+plt.figure(figsize=(10, 5))
+plt.plot(logs['Iteration'], logs['D(x)'], label='D(x)')
+plt.plot(logs['Iteration'], logs['D(G(z))_fake'], label='D(G(z))_fake')
+plt.plot(logs['Iteration'], logs['D(G(z))_real'], label='D(G(z))_real')
+plt.xlabel('Iteration')
+plt.ylabel('Scores')
+plt.legend()
+plt.title('Discriminator Outputs')
+plt.show()
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Danh sách tên tệp CSV
+csv_files = ['training_logs.csv']  # Thay bằng tên tệp của bạn
+
+i =1
+for csv_file in csv_files:
+    print(f"Tệp CSV Lần '{i}' :")
+    logs = pd.read_csv(csv_file)
+    i += 1
+
+    # Vẽ Loss
+    plt.figure(figsize=(10, 5))
+    plt.plot(logs['Iteration'], logs['Loss_D'], label='Loss_D')
+    plt.plot(logs['Iteration'], logs['Loss_G'], label='Loss_G')
+    plt.xlabel('Iteration')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title(f'Discriminator and Generator Loss ({csv_file})')
+    plt.show()
+
+    # Vẽ Scores
+    plt.figure(figsize=(10, 5))
+    plt.plot(logs['Iteration'], logs['D(x)'], label='D(x)')
+    plt.plot(logs['Iteration'], logs['D(G(z))_fake'], label='D(G(z))_fake')
+    plt.plot(logs['Iteration'], logs['D(G(z))_real'], label='D(G(z))_real')
+    plt.xlabel('Iteration')
+    plt.ylabel('Scores')
+    plt.legend()
+    plt.title(f'Discriminator Outputs ({csv_file})')
+    plt.show()
+
+
+# Lưu mô hình và optimizer
+#torch.save(gen_model, 'gen_model.pth')
+#torch.save(dis_model, 'dis_model.pth')
+torch.save(gen_model.state_dict(), 'gen_model.pth')
+torch.save(dis_model.state_dict(), 'dis_model.pth')
+#torch.save(optim_G.state_dict(), 'optim_G.pth')
+#torch.save(optim_D.state_dict(), 'optim_D.pth')
+
+print("Models and optimizers saved!")
+
+import torch
+import matplotlib.pyplot as plt
+from torchvision.utils import make_grid
+
+# Khởi tạo mô hình
+gen_model = Generator()
+dis_model = Discriminator()
+
+# Tải trọng số vào mô hình
+gen_model.load_state_dict(torch.load('gen_model.pth'))
+dis_model.load_state_dict(torch.load('dis_model.pth'))
+
+# Đặt mô hình ở chế độ đánh giá (eval mode)
+gen_model.eval()
+dis_model.eval()
+
+# Tạo noise để sinh ảnh giả
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Kiểm tra GPU
+gen_model.to(device)  # Chuyển mô hình vào GPU
+noise = torch.randn(2, 100, 1, 1, device=device)  # Batch size = 2, vector noise kích thước 100
+
+# Sinh ảnh giả
+fake_img = gen_model(noise)
+
+# Hiển thị ảnh giả được tạo
+fake_img_grid = make_grid(fake_img, padding=2, normalize=True)
+plt.figure(figsize=(5, 5))
+# Move the tensor to the CPU before converting it to a NumPy array
+plt.imshow(fake_img_grid.cpu().permute(1, 2, 0))  # Chuyển thứ tự kênh để hiển thị
+plt.axis('off')
+plt.show()
